@@ -78,7 +78,12 @@ class MainActivity : ComponentActivity() {
 fun AppContent(modelOutput: MutableState<String?>) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    val cameraController = remember { LifecycleCameraController(context) }
+    val cameraController = remember {
+        LifecycleCameraController(context).apply {
+            // Set the default zoom ratio to 1.5x
+            setZoomRatio(1.5f)
+        }
+    }
     val objectDetector = remember { ObjectDetector(context) }
 
     Box(modifier = Modifier.fillMaxSize()) {

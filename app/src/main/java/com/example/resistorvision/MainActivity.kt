@@ -112,6 +112,7 @@ fun AppContent(modelOutput: MutableState<String?>) {
                     text = "Detected Colors: \n$it",
                     modifier = Modifier
                         .fillMaxWidth()
+                        .background(Color.Black.copy(alpha = 0.5f)) // Add semi-transparent background for readability
                         .padding(16.dp),
                     color = Color.White,
                     fontSize = 18.sp,
@@ -137,7 +138,7 @@ private fun captureAndProcessImage(
                 image.close()
 
                 val result = objectDetector.detect(bitmap)
-                modelOutput.value = result.joinToString(", ")
+                modelOutput.value = if (result.isNotEmpty()) result.joinToString(", ") else "No colors detected."
             }
 
             override fun onError(exception: ImageCaptureException) {
@@ -162,6 +163,17 @@ private fun imageProxyToBitmap(image: ImageProxy): Bitmap {
     return Bitmap.createBitmap(initialBitmap, 0, 0, initialBitmap.width, initialBitmap.height, matrix, true)
 }
 
+// Data class to hold detection information, making the code cleaner
+data class BoundingBox(
+    val x1: Float,
+    val y1: Float,
+    val x2: Float,
+    val y2: Float,
+    val confidence: Float,
+    val classId: Int,
+    val className: String
+)
+
 class ObjectDetector(context: Context) {
     private val classNames = listOf(
         "black", "blue", "brown", "gold", "green", "grey", "orange", "red", "silver", "violet", "white", "yellow"
@@ -169,11 +181,15 @@ class ObjectDetector(context: Context) {
     private var ortSession: OrtSession?
     private val ortEnvironment = OrtEnvironment.getEnvironment()
 
+    // --- NMS Configuration ---
+    private val confidenceThreshold = 0.25f // Confidence threshold to filter weak detections
+    private val iouThreshold = 0.45f // IoU threshold to filter overlapping boxes
+
     init {
         try {
             val modelBytes = context.assets.open("best.onnx").readBytes()
             ortSession = ortEnvironment.createSession(modelBytes)
-        } catch (e: Exception) { // This now catches OrtException, IOException, etc.
+        } catch (e: Exception) {
             Log.e(
                 "ObjectDetector",
                 "FATAL: Failed to initialize ONNX model. Check logs for OrtException, likely due to unsupported opset.",
@@ -198,7 +214,7 @@ class ObjectDetector(context: Context) {
             val output = results?.get(0)?.value as? Array<FloatArray>
 
             return if (output != null) {
-                processOutput(output)
+                processOutputWithNMS(output) // Call the new NMS function
             } else {
                 Log.e("ObjectDetector", "Model output was null or of an unexpected type.")
                 listOf("Error: Invalid model output")
@@ -229,23 +245,97 @@ class ObjectDetector(context: Context) {
         return OnnxTensor.createTensor(ortEnvironment, floatBuffer, shape)
     }
 
-    private fun processOutput(output: Array<FloatArray>): List<String> {
-        val detections = mutableListOf<Pair<Float, String>>()
+    /**
+     * Calculates the Intersection over Union (IoU) between two bounding boxes.
+     */
+    private fun calculateIoU(box1: BoundingBox, box2: BoundingBox): Float {
+        val x1 = maxOf(box1.x1, box2.x1)
+        val y1 = maxOf(box1.y1, box2.y1)
+        val x2 = minOf(box1.x2, box2.x2)
+        val y2 = minOf(box1.y2, box2.y2)
 
+        val intersectionArea = maxOf(0f, x2 - x1) * maxOf(0f, y2 - y1)
+        val box1Area = (box1.x2 - box1.x1) * (box1.y2 - box1.y1)
+        val box2Area = (box2.x2 - box2.x1) * (box2.y2 - box2.y1)
+        val unionArea = box1Area + box2Area - intersectionArea
+
+        return if (unionArea > 0) intersectionArea / unionArea else 0f
+    }
+
+    /**
+     * Processes the raw model output, applying Non-Maximum Suppression and then
+     * a final deduplication step to produce the clean, final sequence.
+     */
+    private fun processOutputWithNMS(output: Array<FloatArray>): List<String> {
+        val allBoxes = mutableListOf<BoundingBox>()
+
+        // Step 1: Decode all raw detections into BoundingBox objects
         output.forEach { detection ->
             val confidence = detection[4]
-            if (confidence > 0.25) {
-                val x1 = detection[0]
+            if (confidence >= confidenceThreshold) {
                 val classId = detection[5].toInt()
                 if (classId in classNames.indices) {
-                    detections.add(Pair(x1, classNames[classId]))
+                    allBoxes.add(
+                        BoundingBox(
+                            x1 = detection[0],
+                            y1 = detection[1],
+                            x2 = detection[2],
+                            y2 = detection[3],
+                            confidence = confidence,
+                            classId = classId,
+                            className = classNames[classId]
+                        )
+                    )
                 }
             }
         }
 
-        return detections.sortedBy { it.first }.map { it.second }
+        if (allBoxes.isEmpty()) {
+            return emptyList()
+        }
+
+        // Step 2: Apply NMS for each class separately
+        val finalDetections = mutableListOf<BoundingBox>()
+        val groupedBoxes = allBoxes.groupBy { it.classId }
+
+        groupedBoxes.forEach { (_, boxes) ->
+            var remainingBoxes = boxes.sortedByDescending { it.confidence }.toMutableList()
+
+            while (remainingBoxes.isNotEmpty()) {
+                val bestBox = remainingBoxes.first()
+                finalDetections.add(bestBox) // Keep the box with the highest confidence
+                remainingBoxes.removeAt(0) // FIX: Use removeAt(0) for API compatibility
+
+                // Remove all other boxes that have a high IoU with the best box
+                remainingBoxes = remainingBoxes.filter { box ->
+                    calculateIoU(bestBox, box) < iouThreshold
+                }.toMutableList()
+            }
+        }
+
+        // Step 3: Sort the clean detections by their horizontal position
+        val sortedColors = finalDetections.sortedBy { it.x1 }.map { it.className }
+
+        // Step 4 (NEW): Deduplicate the final sorted list
+        // This removes consecutive identical colors (e.g., [brown, brown, black] -> [brown, black])
+        if (sortedColors.isEmpty()) {
+            return emptyList()
+        }
+
+        val deduplicatedColors = mutableListOf<String>()
+        deduplicatedColors.add(sortedColors.first()) // Add the very first color
+
+        for (i in 1 until sortedColors.size) {
+            // Only add the current color if it's different from the previous one
+            if (sortedColors[i] != sortedColors[i - 1]) {
+                deduplicatedColors.add(sortedColors[i])
+            }
+        }
+
+        return deduplicatedColors
     }
 }
+
 @Preview(showBackground = true, showSystemUi = true)
 @Composable
 fun AppContentPreview() {
@@ -278,6 +368,7 @@ fun AppContentPreview() {
                         text = "Detected Colors: \n$it",
                         modifier = Modifier
                             .fillMaxWidth()
+                            .background(Color.Black.copy(alpha = 0.5f))
                             .padding(16.dp),
                         color = Color.White,
                         fontSize = 18.sp,

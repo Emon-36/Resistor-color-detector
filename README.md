@@ -38,3 +38,58 @@ Prerequisites
 •An Android device with a camera
 
 •A pre-trained ONNX model named best.onnx (see Crucial Model Requirement below)
+
+Build Instructions1.Clone the Repository 
+
+git clone https://github.com/Emon-36/Resistor-color-detector.git
+
+2.  **Place the ONNX Model**
+    -   Obtain your trained `best.onnx` model file.
+    -   In Android Studio, switch to the **Project** view.
+    -   Navigate to `app/src/main/`.
+    -   Create a new directory named `assets` if it doesn't already exist.
+    -   Copy your `best.onnx` file into the `app/src/main/assets/` directory.
+
+3.  **Open in Android Studio**
+    -   Open the cloned project in Android Studio.
+    -   Allow Gradle to sync the project dependencies.
+
+4.  **Build and Run**
+    -   Connect your Android device or start an emulator with camera support.
+    -   Run the app from Android Studio. It will request camera permission on the first launch.
+
+## Crucial Model Requirement: ONNX Opset Version
+
+The most common point of failure in this project is an incompatibility between the exported ONNX model and the ONNX Android Runtime library. This will cause the app to fail model loading.
+
+**The model `best.onnx` MUST be exported with `opset_version=21` or lower.**
+
+The version of the ONNX Runtime library used in this project (`com.microsoft.onnxruntime:onnxruntime-android:1.18.0`) **only guarantees support up to Opset 21**. Exporting with a newer, experimental opset (like 22) will cause a fatal `ai.onnxruntime.OrtException`, which this app will gracefully catch and display as a "Model failed to load" error.
+
+#### Example Python Export Script (for PyTorch)
+
+If you are training and exporting your model using PyTorch, ensure your export command explicitly includes the `opset_version` parameter:17
+
+Place the ONNX Model
+
+•Obtain your trained best.onnx model file
+
+.•In Android Studio, switch to the Project view.•Navigate to app/src/main/.
+
+•Create a new directory named assets if it doesn't already exist.
+
+•Copy your best.onnx file into the app/src/main/assets/ directory.
+
+3.Open in Android Studio
+
+•Open the cloned project in Android Studio.
+
+•Allow Gradle to sync the project dependencies.
+
+4.Build and Run
+
+•Connect your Android device or start an emulator with camera support.
+
+•Run the app from Android Studio. It will request camera permission on the first launch.
+
+**Crucial Model Requirement: ONNX**
